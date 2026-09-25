@@ -131,9 +131,13 @@
       }
       return byId.map[id];
     }
+    function isDue(it) {
+      const r = rec(it.id);
+      return r.tries > 0 && (!r.nextDue || r.nextDue <= startOfDay(0));
+    }
     function stillMissing(it) {
       const r = rec(it.id);
-      return r.wrongs >= 2 && r.streak < 2;
+      return r.wrongs >= 2 && isDue(it);
     }
     function writeLive() {
       db.liveSession = session && session.queue && session.queue.length ? {
@@ -178,24 +182,69 @@
     function wrap(ch, q) { return { ...q, id: qid(ch, q), title: ch.title, part: ch.part }; }
     function chapterItems(ch) { return BANK[ch.part][ch.sheet].map((q) => wrap(ch, q)); }
     const TOTAL = allItems().length;
-    function rec(id) { return db.answers[id] || { tries:0, wrongs:0, streak:0, lastOk:false }; }
+    function startOfDay(offset) {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + offset);
+      return d.getTime();
+    }
+    function dayKey(ts) {
+      const d = new Date(ts || Date.now());
+      return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
+    }
+    function examCap(ts) {
+      const examDay = new Date(2026, 9, 31);
+      examDay.setHours(0, 0, 0, 0);
+      if (startOfDay(0) >= examDay.getTime()) return startOfDay(0);
+      return Math.min(ts, examDay.getTime());
+    }
+    function rec(id) {
+      const raw = db.answers[id];
+      if (!raw) return { tries: 0, wrongs: 0, lastOk: false, spaced: 0, nextDue: 0, lastCorrectDay: null };
+      if (raw.nextDue == null) {
+        const migrated = { tries: raw.tries || 0, wrongs: raw.wrongs || 0, lastOk: !!raw.lastOk, last: raw.last || 0, spaced: 0, nextDue: raw.tries ? startOfDay(0) : 0, lastCorrectDay: null };
+        if ((raw.streak || 0) >= 1 && raw.lastOk) {
+          migrated.spaced = 1;
+          migrated.nextDue = startOfDay(1);
+          migrated.lastCorrectDay = dayKey(raw.last);
+        }
+        return migrated;
+      }
+      return raw;
+    }
     function seenCount(items) { return items.filter((it) => rec(it.id).tries > 0).length; }
-    function lockedCount(items) { return items.filter((it) => rec(it.id).streak >= 2).length; }
+    function laterCount(items) { return items.filter((it) => rec(it.id).tries > 0 && rec(it.id).lastOk && rec(it.id).nextDue > startOfDay(0)).length; }
     function correctNow(items) { return items.filter((it) => rec(it.id).tries > 0 && rec(it.id).lastOk).length; }
     function present(item) {
       const opts = shuffle(item.o).map((o, i) => ({ show: letters[i], t: o.t, src: o.k }));
       const found = opts.find((o) => o.src === item.a);
       return { item, opts, correct: found ? found.show : opts[0].show };
     }
-    function grade(item, pick, correctShow, correctLetter) {
+    const INTERVALS = [1, 3, 7, 14, 21];
+    function grade(item, pick, correctShow) {
       const prev = rec(item.id);
       const ok = pick === correctShow;
+      const today = dayKey();
+      let spaced = prev.spaced || 0;
+      let lastCorrectDay = prev.lastCorrectDay || null;
+      let nextDue = startOfDay(0);
+      if (ok) {
+        if (lastCorrectDay !== today) spaced += 1;
+        const gap = INTERVALS[Math.min(spaced, INTERVALS.length) - 1] || 21;
+        nextDue = examCap(startOfDay(gap));
+        lastCorrectDay = today;
+      } else {
+        spaced = 0;
+        lastCorrectDay = null;
+      }
       const next = {
         tries: prev.tries + 1,
         wrongs: prev.wrongs + (ok ? 0 : 1),
-        streak: ok ? prev.streak + 1 : 0,
         lastOk: ok,
-        last: Date.now()
+        last: Date.now(),
+        spaced,
+        nextDue,
+        lastCorrectDay
       };
       db.answers[item.id] = next;
       save();
@@ -205,17 +254,17 @@
     function home() {
       const all = allItems();
       const seen = seenCount(all);
-      const locked = lockedCount(all);
+      const waiting = laterCount(all);
       const last = db.exams[0];
       const days = daysLeft();
       const repeat = all.filter(stillMissing).length;
       app.innerHTML = `
         <p class="kicker">Πιστοποιητικό α1</p>
         <h1>${days > 0 ? days + " μέρες ως τις 31/10" : "31 Οκτωβρίου"}</h1>
-        <p class="sub">Διαλέγεις 10, 20 ή ένα κεφάλαιο. Οι ερωτήσεις είναι τυχαίες. Όποια δεν την έχεις πει σωστά δύο φορές στη σειρά ξαναγυρίζει.</p>
+        <p class="sub">Πρώτα όσες είναι για σήμερα, μετά καινούριες, ανακατεμένες. Σωστή μία φορά και φεύγει. Ξανάρχεται σε 1, μετά 3, μετά 7 μέρες. Αν τη χάσεις, γυρίζει πιο κάτω στην ίδια συνεδρία.</p>
         <div class="grid">
           <div class="stat"><b>${seen}/${TOTAL}</b><span>έχεις δει</span></div>
-          <div class="stat"><b>${locked}</b><span>κλειδωμένες</span></div>
+          <div class="stat"><b>${waiting}</b><span>για άλλη μέρα</span></div>
           <div class="stat"><b class="${last ? (last.score >= 28 ? "pass" : "fail") : ""}">${last ? last.score + "/40" : "–"}</b><span>${last ? (last.score >= 28 ? "τελευταίο τεστ: θα περνούσες" : "τελευταίο τεστ: κάτω από 28") : "δεν έχεις δώσει τεστ"}</span></div>
           <div class="stat"><b>${repeat}</b><span>τις χάνεις ξανά και ξανά</span></div>
         </div>
@@ -233,13 +282,21 @@
       if (rep) rep.onclick = () => startList(shuffle(all.filter(stillMissing)), "Λάθη που επαναλαμβάνονται");
     }
 
-    function pool(items) {
-      const open = items.filter((it) => rec(it.id).streak < 2);
-      return open.length ? open : items;
+    function pickSet(items, n) {
+      const due = shuffle(items.filter(isDue));
+      const fresh = shuffle(items.filter((it) => rec(it.id).tries === 0));
+      let ordered = due.concat(fresh);
+      if (ordered.length < n) {
+        const later = items.filter((it) => rec(it.id).tries > 0 && rec(it.id).lastOk && rec(it.id).nextDue > startOfDay(0));
+        later.sort((a, b) => rec(a.id).nextDue - rec(b.id).nextDue);
+        ordered = ordered.concat(later);
+      }
+      if (!ordered.length) ordered = shuffle(items);
+      return ordered.slice(0, n);
     }
     function startRandom(n) {
-      const items = shuffle(pool(allItems())).slice(0, n);
-      startList(items, n + " τυχαίες");
+      const items = pickSet(allItems(), n);
+      startList(items, n + " για σήμερα");
     }
     function startList(items, label) {
       if (!items.length) { alert("Δεν υπάρχουν ερωτήσεις σε αυτή την ομάδα."); return; }
@@ -251,18 +308,18 @@
     }
 
     function chapters() {
-      app.innerHTML = `<h1>Κεφάλαιο</h1><p class="sub">Μπαίνουν τυχαίες όσες δεν έχεις κλείδωσει. Αν τις έχεις κλείδωσει όλες, ξαναμπαίνει το κεφάλαιο για επανάληψη.</p><div class="stack">${
+      app.innerHTML = `<h1>Κεφάλαιο</h1><p class="sub">Μπαίνουν όσες είναι για σήμερα και όσες δεν έχεις δει. Οι υπόλοιπες ξανάρχονται τη μέρα που τους έχει οριστεί.</p><div class="stack">${
         CHAPTERS.map((ch, i) => {
           const items = chapterItems(ch);
           const seen = seenCount(items);
           const ok = correctNow(items);
           const pct = seen ? Math.round(ok / seen * 100) : 0;
-          return `<button class="ch" data-i="${i}" type="button"><strong>${esc(ch.title)}</strong><div class="row"><span>${seen}/${items.length} είδες · ${lockedCount(items)} κλειδωμένες</span><span>${seen ? pct + "%" : ""}</span></div><div class="bar ${seen && pct < 70 ? "warn" : ""}"><span style="width:${seen ? pct : 0}%"></span></div></button>`;
+          return `<button class="ch" data-i="${i}" type="button"><strong>${esc(ch.title)}</strong><div class="row"><span>${seen}/${items.length} είδες · ${laterCount(items)} για άλλη μέρα</span><span>${seen ? pct + "%" : ""}</span></div><div class="bar ${seen && pct < 70 ? "warn" : ""}"><span style="width:${seen ? pct : 0}%"></span></div></button>`;
         }).join("")
       }</div>`;
       app.querySelectorAll(".ch").forEach((b) => b.onclick = () => {
         const ch = CHAPTERS[Number(b.dataset.i)];
-        startList(shuffle(pool(chapterItems(ch))), ch.title);
+        startList(pickSet(chapterItems(ch), chapterItems(ch).length), ch.title);
       });
     }
 
@@ -272,11 +329,11 @@
       if (!session.view) session.view = present(session.queue[0]);
       const view = session.view;
       const item = view.item;
-      const open = session.queue.filter((q, i) => session.queue.findIndex((x) => x.id === q.id) === i && rec(q.id).streak < 2).length;
+      const open = new Set(session.queue.map((q) => q.id)).size;
       const done = session.pick != null;
       const why = WHY[item.id];
       app.innerHTML = `
-        <div class="top"><button class="back" id="back" type="button">←</button><div><p class="kicker">${esc(session.label)} · ${esc(item.title)}</p><p class="sub" style="margin:0">Μένουν ${open} για κλείδωμα</p></div></div>
+        <div class="top"><button class="back" id="back" type="button">←</button><div><p class="kicker">${esc(session.label)} · ${esc(item.title)}</p><p class="sub" style="margin:0">Μένουν ${open} σε αυτή τη συνεδρία</p></div></div>
         <h2>${esc(item.q)}</h2>
         <div class="opts">${view.opts.map((o) => {
           let cls = "opt";
@@ -300,12 +357,9 @@
           session.note = "Λάθος. Σωστό είναι το " + view.correct + ".";
           session.whyText = why || view.opts.find((o) => o.show === view.correct).t;
           session.requeue = true;
-        } else if (next.streak < 2) {
-          session.note = "Σωστό. Μένει άλλη μία φορά για να κλειδώσει.";
-          session.whyText = "";
-          session.requeue = true;
         } else {
-          session.note = "Κλείδωσε.";
+          const days = Math.max(1, Math.round((next.nextDue - startOfDay(0)) / 86400000));
+          session.note = "Σωστό. Επόμενη φορά σε " + days + (days === 1 ? " μέρα." : " μέρες.");
           session.whyText = "";
           session.requeue = false;
         }
@@ -333,7 +387,7 @@
           <div class="stat"><b>${session.firstCorrect}/${n}</b><span>σωστές με την πρώτη</span></div>
           <div class="stat"><b>${n - session.firstCorrect}</b><span>γύρισαν πίσω</span></div>
         </div>
-        <p class="sub">Κάθε ερώτηση της συνεδρίας την είπες σωστά δύο φορές στη σειρά. Από εδώ και πέρα μετράει ως κλειδωμένη.</p>
+        <p class="sub">Όσες είπες σωστά φεύγουν και ξανάρχονται άλλη μέρα. Όσες έχασες γύρισαν μέσα στη συνεδρία, με άλλες ερωτήσεις ανάμεσα, μέχρι να τις πεις σωστά μία φορά.</p>
         <div class="stack">
           <button class="btn" id="again" type="button">Άλλες 10</button>
           <button class="btn ghost" id="home" type="button">Αρχική</button>
@@ -420,14 +474,14 @@
     function stats() {
       const all = allItems();
       const seen = seenCount(all);
-      const locked = lockedCount(all);
+      const waiting = laterCount(all);
       const last = db.exams[0];
       const repeats = all.filter(stillMissing).sort((a, b) => rec(b.id).wrongs - rec(a.id).wrongs);
       app.innerHTML = `
         <h1>Στατιστικά</h1>
         <div class="grid">
           <div class="stat"><b>${seen}/${TOTAL}</b><span>κάλυψη τράπεζας</span></div>
-          <div class="stat"><b>${locked}</b><span>κλειδωμένες</span></div>
+          <div class="stat"><b>${waiting}</b><span>για άλλη μέρα</span></div>
         </div>
         <div class="card" style="padding:12px 14px;margin-bottom:14px">
           <strong>${last ? (last.score >= 28 ? "Με το τελευταίο τεστ θα περνούσες." : "Με το τελευταίο τεστ δεν θα περνούσες.") : "Δεν έχεις δώσει τεστ, άρα δεν ξέρουμε ακόμα αν θα περνούσες."}</strong>
@@ -443,7 +497,7 @@
           return `<div class="ch"><strong>${esc(ch.title)}</strong><div class="row"><span>${ok} σωστές τώρα / ${s} είδες / ${items.length}</span><span>${s ? pct + "%" : "–"}</span></div><div class="bar ${s && pct < 70 ? "warn" : ""}"><span style="width:${s ? pct : 0}%"></span></div></div>`;
         }).join("")}</div>
         <h2>Τις χάνεις ξανά και ξανά</h2>
-        ${repeats.length ? repeats.slice(0, 30).map((it) => `<div class="miss"><strong>${rec(it.id).wrongs} φορές</strong> · ${esc(it.title)}<div>${esc(it.q.slice(0, 140))}</div></div>`).join("") : "<p class=sub>Ακόμα καμία δεν έχει πέσει λάθος δύο φορές.</p>"}
+        ${repeats.length ? repeats.slice(0, 30).map((it) => `<div class="miss"><strong>${rec(it.id).wrongs} φορές</strong> · ${esc(it.title)}<div>${esc(it.q.slice(0, 140))}</div></div>`).join("") : "<p class=sub>Καμία ερώτηση που έχεις χάσει πάνω από μία φορά δεν είναι για σήμερα.</p>"}
         ${repeats.length ? '<button class="btn" id="drill" type="button" style="margin-top:12px">Λύσε όσες δεν έχουν κλειδώσει</button>' : ""}
         <button class="btn ghost" id="reset" type="button" style="margin-top:16px">Μηδενισμός σε αυτό το κινητό</button>`;
       const drill = document.querySelector("#drill");
