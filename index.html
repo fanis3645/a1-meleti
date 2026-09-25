@@ -120,6 +120,7 @@
     let db = load();
     if (!db.answers) db.answers = {};
     if (!db.exams) db.exams = [];
+    if (typeof db.sessions !== "number" || db.sessions < 0) db.sessions = 0;
     function save() {
       try { localStorage.setItem(KEY, JSON.stringify(db)); }
       catch (e) {}
@@ -131,13 +132,44 @@
       }
       return byId.map[id];
     }
-    function isDue(it) {
+    function missReady(it) {
       const r = rec(it.id);
-      return r.tries > 0 && (!r.nextDue || r.nextDue <= startOfDay(0));
+      return r.missDue != null && (db.sessions || 0) >= r.missDue;
     }
+    function calendarDue(it) {
+      const r = rec(it.id);
+      return r.tries > 0 && !!r.lastOk && !!r.nextDue && r.nextDue <= startOfDay(0) && r.missDue == null;
+    }
+    function isDue(it) { return missReady(it) || calendarDue(it); }
     function stillMissing(it) {
       const r = rec(it.id);
-      return r.wrongs >= 2 && isDue(it);
+      return r.wrongs >= 2 && missReady(it);
+    }
+    function migrateStore() {
+      if (db.missBatchMigrated) return;
+      for (const id of Object.keys(db.answers)) {
+        let raw = db.answers[id];
+        if (!raw) continue;
+        if (raw.nextDue == null) {
+          const migrated = { tries: raw.tries || 0, wrongs: raw.wrongs || 0, lastOk: !!raw.lastOk, last: raw.last || 0, spaced: 0, nextDue: raw.tries ? startOfDay(0) : 0, lastCorrectDay: null, missDue: null };
+          if ((raw.streak || 0) >= 1 && raw.lastOk) {
+            migrated.spaced = 1;
+            migrated.nextDue = startOfDay(1);
+            migrated.lastCorrectDay = dayKey(raw.last);
+          }
+          db.answers[id] = migrated;
+          raw = migrated;
+        }
+        if (raw.tries > 0 && !raw.lastOk && raw.missDue == null) {
+          raw.missDue = db.sessions + 3;
+          raw.nextDue = 0;
+          raw.spaced = 0;
+          raw.lastCorrectDay = null;
+        }
+        if (raw.lastOk) raw.missDue = null;
+      }
+      db.missBatchMigrated = true;
+      save();
     }
     function writeLive() {
       db.liveSession = session && session.queue && session.queue.length ? {
@@ -200,16 +232,20 @@
     }
     function rec(id) {
       const raw = db.answers[id];
-      if (!raw) return { tries: 0, wrongs: 0, lastOk: false, spaced: 0, nextDue: 0, lastCorrectDay: null };
+      if (!raw) return { tries: 0, wrongs: 0, lastOk: false, spaced: 0, nextDue: 0, lastCorrectDay: null, missDue: null };
       if (raw.nextDue == null) {
-        const migrated = { tries: raw.tries || 0, wrongs: raw.wrongs || 0, lastOk: !!raw.lastOk, last: raw.last || 0, spaced: 0, nextDue: raw.tries ? startOfDay(0) : 0, lastCorrectDay: null };
+        const migrated = { tries: raw.tries || 0, wrongs: raw.wrongs || 0, lastOk: !!raw.lastOk, last: raw.last || 0, spaced: 0, nextDue: raw.tries ? startOfDay(0) : 0, lastCorrectDay: null, missDue: null };
         if ((raw.streak || 0) >= 1 && raw.lastOk) {
           migrated.spaced = 1;
           migrated.nextDue = startOfDay(1);
           migrated.lastCorrectDay = dayKey(raw.last);
+        } else if ((raw.tries || 0) > 0 && !raw.lastOk) {
+          migrated.missDue = (db.sessions || 0) + 3;
+          migrated.nextDue = 0;
         }
         return migrated;
       }
+      if (raw.missDue === undefined) raw.missDue = null;
       return raw;
     }
     function seenCount(items) { return items.filter((it) => rec(it.id).tries > 0).length; }
@@ -228,15 +264,18 @@
       let spaced = prev.spaced || 0;
       let lastCorrectDay = prev.lastCorrectDay || null;
       let nextDue = startOfDay(0);
+      let missDue = null;
       if (ok) {
         if (lastCorrectDay !== today) spaced += 1;
         const gap = INTERVALS[Math.min(spaced, INTERVALS.length) - 1] || 21;
         nextDue = examCap(startOfDay(gap));
         lastCorrectDay = today;
+        missDue = null;
       } else {
         spaced = 0;
         lastCorrectDay = null;
-        nextDue = startOfDay(1);
+        nextDue = 0;
+        missDue = (db.sessions || 0) + 3;
       }
       const next = {
         tries: prev.tries + 1,
@@ -245,7 +284,8 @@
         last: Date.now(),
         spaced,
         nextDue,
-        lastCorrectDay
+        lastCorrectDay,
+        missDue
       };
       db.answers[item.id] = next;
       save();
@@ -260,9 +300,9 @@
       const days = daysLeft();
       const repeat = all.filter(stillMissing).length;
       app.innerHTML = `
-        <p class="kicker">Πιστοποιητικό α1 · έκδοση 5</p>
+        <p class="kicker">Πιστοποιητικό α1 · έκδοση 6</p>
         <h1>${days > 0 ? days + " μέρες ως τις 31/10" : "31 Οκτωβρίου"}</h1>
-        <p class="sub">Οι 10 ή οι 20 είναι ακριβώς τόσες προσπάθειες, σωστές ή λάθος. Δεν ξανάρχεται καμία μέσα στην ίδια συνεδρία. Η λάθος έρχεται αύριο. Η σωστή έρχεται σε 1, μετά 3, μετά 7 μέρες.</p>
+        <p class="sub">Μία παρτίδα 10 ή 20 είναι ακριβώς τόσες προσπάθειες, μία φορά η καθεμία, σωστή ή λάθος. Το λάθος δεν γυρίζει την ίδια μέρα ούτε οπωσδήποτε το επόμενο πρωί: έρχεται μετά από 3 άλλες παρτίδες. Το σωστό έρχεται σε 1, μετά 3, μετά 7 μέρες.</p>
         <div class="grid">
           <div class="stat"><b>${seen}/${TOTAL}</b><span>έχεις δει</span></div>
           <div class="stat"><b>${waiting}</b><span>για άλλη μέρα</span></div>
@@ -284,16 +324,10 @@
     }
 
     function pickSet(items, n) {
-      const due = shuffle(items.filter(isDue));
+      const misses = shuffle(items.filter(missReady));
+      const due = shuffle(items.filter((it) => !missReady(it) && calendarDue(it)));
       const fresh = shuffle(items.filter((it) => rec(it.id).tries === 0));
-      let ordered = due.concat(fresh);
-      if (ordered.length < n) {
-        const later = items.filter((it) => rec(it.id).tries > 0 && rec(it.id).lastOk && rec(it.id).nextDue > startOfDay(0));
-        later.sort((a, b) => rec(a.id).nextDue - rec(b.id).nextDue);
-        ordered = ordered.concat(later);
-      }
-      if (!ordered.length) ordered = shuffle(items);
-      return ordered.slice(0, n);
+      return misses.concat(due).concat(fresh).slice(0, n);
     }
     function startRandom(n) {
       const items = pickSet(allItems(), n);
@@ -355,7 +389,7 @@
           if (next.lastOk) session.firstCorrect++;
         }
         if (!next.lastOk) {
-          session.note = "Λάθος. Σωστό είναι το " + view.correct + ". Θα ξανάρθει αύριο.";
+          session.note = "Λάθος. Σωστό είναι το " + view.correct + ". Θα ξανάρθει μετά από 3 παρτίδες.";
           session.whyText = why || view.opts.find((o) => o.show === view.correct).t;
           session.requeue = false;
         } else {
@@ -369,11 +403,11 @@
       });
       const nxt = document.querySelector("#next");
       if (nxt) nxt.onclick = () => {
-        const cur = session.queue.shift();
-        if (session.requeue) session.queue.push(cur);
+        session.queue.shift();
+        session.requeue = false;
+        if (!session.queue.length) db.sessions = (db.sessions || 0) + 1;
         session.view = null;
         session.pick = null;
-        session.requeue = false;
         writeLive();
         render();
       };
@@ -388,7 +422,7 @@
           <div class="stat"><b>${session.firstCorrect}/${n}</b><span>σωστές με την πρώτη</span></div>
           <div class="stat"><b>${n - session.firstCorrect}</b><span>λάθος</span></div>
         </div>
-        <p class="sub">Αυτό είναι το σκορ της συνεδρίας, με μία προσπάθεια σε κάθε ερώτηση. Οι λάθος δεν μετράνε ως σωστές και ξανάρχονται αύριο.</p>
+        <p class="sub">Αυτό είναι το σκορ αυτής της παρτίδας, με μία προσπάθεια σε κάθε ερώτηση. Οι λάθος μένουν λάθος και ξανάρχονται μετά από 3 άλλες παρτίδες.</p>
         <div class="stack">
           <button class="btn" id="again" type="button">Άλλες 10</button>
           <button class="btn ghost" id="home" type="button">Αρχική</button>
@@ -498,14 +532,14 @@
           return `<div class="ch"><strong>${esc(ch.title)}</strong><div class="row"><span>${ok} σωστές τώρα / ${s} είδες / ${items.length}</span><span>${s ? pct + "%" : "–"}</span></div><div class="bar ${s && pct < 70 ? "warn" : ""}"><span style="width:${s ? pct : 0}%"></span></div></div>`;
         }).join("")}</div>
         <h2>Τις χάνεις ξανά και ξανά</h2>
-        ${repeats.length ? repeats.slice(0, 30).map((it) => `<div class="miss"><strong>${rec(it.id).wrongs} φορές</strong> · ${esc(it.title)}<div>${esc(it.q.slice(0, 140))}</div></div>`).join("") : "<p class=sub>Καμία ερώτηση που έχεις χάσει πάνω από μία φορά δεν είναι για σήμερα.</p>"}
+        ${repeats.length ? repeats.slice(0, 30).map((it) => `<div class="miss"><strong>${rec(it.id).wrongs} φορές</strong> · ${esc(it.title)}<div>${esc(it.q.slice(0, 140))}</div></div>`).join("") : "<p class=sub>Καμία επανάληψη λάθους δεν είναι έτοιμη τώρα. Το λάθος γυρίζει μετά από 3 άλλες παρτίδες.</p>"}
         ${repeats.length ? '<button class="btn" id="drill" type="button" style="margin-top:12px">Λύσε όσες δεν έχουν κλειδώσει</button>' : ""}
         <button class="btn ghost" id="reset" type="button" style="margin-top:16px">Μηδενισμός σε αυτό το κινητό</button>`;
       const drill = document.querySelector("#drill");
       if (drill) drill.onclick = () => startList(shuffle(repeats), "Επαναλαμβανόμενα λάθη");
       document.querySelector("#reset").onclick = () => {
         if (!confirm("Να σβηστούν οι απαντήσεις και τα τεστ από αυτό το κινητό;")) return;
-        db = { answers: {}, exams: [] };
+        db = { answers: {}, exams: [], sessions: 0, missBatchMigrated: true };
         save();
         session = null;
         exam = null;
@@ -535,6 +569,7 @@
       tab = b.dataset.tab;
       render();
     });
+    migrateStore();
     if (db.liveExam && db.liveExam.paper && db.liveExam.paper.length === 40) {
       exam = {
         started: db.liveExam.started,
@@ -556,7 +591,7 @@
           pick: db.liveSession.pick,
           note: db.liveSession.note || "",
           whyText: db.liveSession.whyText || "",
-          requeue: !!db.liveSession.requeue
+          requeue: false
         };
         if (db.liveSession.opts && db.liveSession.correct) {
           session.view = { item: queue[0], opts: db.liveSession.opts, correct: db.liveSession.correct };
