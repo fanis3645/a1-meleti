@@ -236,6 +236,7 @@
       } else {
         spaced = 0;
         lastCorrectDay = null;
+        nextDue = startOfDay(1);
       }
       const next = {
         tries: prev.tries + 1,
@@ -259,9 +260,9 @@
       const days = daysLeft();
       const repeat = all.filter(stillMissing).length;
       app.innerHTML = `
-        <p class="kicker">Πιστοποιητικό α1 · έκδοση 4</p>
+        <p class="kicker">Πιστοποιητικό α1 · έκδοση 5</p>
         <h1>${days > 0 ? days + " μέρες ως τις 31/10" : "31 Οκτωβρίου"}</h1>
-        <p class="sub">Πρώτα όσες είναι για σήμερα, μετά καινούριες, ανακατεμένες. Σωστή μία φορά και φεύγει. Ξανάρχεται σε 1, μετά 3, μετά 7 μέρες. Αν τη χάσεις, γυρίζει πιο κάτω στην ίδια συνεδρία.</p>
+        <p class="sub">Οι 10 ή οι 20 είναι ακριβώς τόσες προσπάθειες, σωστές ή λάθος. Δεν ξανάρχεται καμία μέσα στην ίδια συνεδρία. Η λάθος έρχεται αύριο. Η σωστή έρχεται σε 1, μετά 3, μετά 7 μέρες.</p>
         <div class="grid">
           <div class="stat"><b>${seen}/${TOTAL}</b><span>έχεις δει</span></div>
           <div class="stat"><b>${waiting}</b><span>για άλλη μέρα</span></div>
@@ -354,9 +355,9 @@
           if (next.lastOk) session.firstCorrect++;
         }
         if (!next.lastOk) {
-          session.note = "Λάθος. Σωστό είναι το " + view.correct + ".";
+          session.note = "Λάθος. Σωστό είναι το " + view.correct + ". Θα ξανάρθει αύριο.";
           session.whyText = why || view.opts.find((o) => o.show === view.correct).t;
-          session.requeue = true;
+          session.requeue = false;
         } else {
           const days = Math.max(1, Math.round((next.nextDue - startOfDay(0)) / 86400000));
           session.note = "Σωστό. Επόμενη φορά σε " + days + (days === 1 ? " μέρα." : " μέρες.");
@@ -385,9 +386,9 @@
         <h1>Τέλος συνεδρίας</h1>
         <div class="grid">
           <div class="stat"><b>${session.firstCorrect}/${n}</b><span>σωστές με την πρώτη</span></div>
-          <div class="stat"><b>${n - session.firstCorrect}</b><span>γύρισαν πίσω</span></div>
+          <div class="stat"><b>${n - session.firstCorrect}</b><span>λάθος</span></div>
         </div>
-        <p class="sub">Όσες είπες σωστά φεύγουν και ξανάρχονται άλλη μέρα. Όσες έχασες γύρισαν μέσα στη συνεδρία, με άλλες ερωτήσεις ανάμεσα, μέχρι να τις πεις σωστά μία φορά.</p>
+        <p class="sub">Αυτό είναι το σκορ της συνεδρίας, με μία προσπάθεια σε κάθε ερώτηση. Οι λάθος δεν μετράνε ως σωστές και ξανάρχονται αύριο.</p>
         <div class="stack">
           <button class="btn" id="again" type="button">Άλλες 10</button>
           <button class="btn ghost" id="home" type="button">Αρχική</button>

@@ -1,4 +1,4 @@
-const CACHE="a1-1790366197051";
+const CACHE="a1-1790366435993";
 const SHELL="./index.html";
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
