@@ -1,0 +1,10 @@
+{
+  "name": "Πιστοποιητικό α1",
+  "short_name": "α1",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#efe8dc",
+  "theme_color": "#1a3352",
+  "lang": "el"
+}
