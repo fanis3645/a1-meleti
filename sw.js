@@ -1,6 +1,15 @@
-const CACHE="a1-1790360113142";
+const CACHE="a1-1790362594299";
+const SHELL="./index.html";
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(["./", "./index.html", "./manifest.webmanifest"])));
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    const page = await fetch(SHELL, { cache: "reload" });
+    if (!page.ok) throw new Error("shell");
+    await cache.put(SHELL, page.clone());
+    await cache.put("./", page.clone());
+    const manifest = await fetch("./manifest.webmanifest", { cache: "reload" });
+    if (manifest.ok) await cache.put("./manifest.webmanifest", manifest);
+  })());
   self.skipWaiting();
 });
 self.addEventListener("activate", (event) => {
@@ -8,5 +17,15 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 self.addEventListener("fetch", (event) => {
-  event.respondWith(caches.match(event.request).then((hit) => hit || fetch(event.request)));
+  if (event.request.method !== "GET") return;
+  event.respondWith((async () => {
+    if (event.request.mode === "navigate") {
+      const shell = await caches.match(SHELL) || await caches.match("./");
+      if (shell) return shell;
+    }
+    const hit = await caches.match(event.request);
+    if (hit) return hit;
+    try { return await fetch(event.request); }
+    catch (e) { return await caches.match(SHELL) || new Response("", { status: 503 }); }
+  })());
 });
