@@ -259,7 +259,7 @@
       const days = daysLeft();
       const repeat = all.filter(stillMissing).length;
       app.innerHTML = `
-        <p class="kicker">Πιστοποιητικό α1</p>
+        <p class="kicker">Πιστοποιητικό α1 · έκδοση 4</p>
         <h1>${days > 0 ? days + " μέρες ως τις 31/10" : "31 Οκτωβρίου"}</h1>
         <p class="sub">Πρώτα όσες είναι για σήμερα, μετά καινούριες, ανακατεμένες. Σωστή μία φορά και φεύγει. Ξανάρχεται σε 1, μετά 3, μετά 7 μέρες. Αν τη χάσεις, γυρίζει πιο κάτω στην ίδια συνεδρία.</p>
         <div class="grid">
@@ -563,7 +563,15 @@
         tab = "solve";
       }
     }
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+    if ("serviceWorker" in navigator) {
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (reloaded) return;
+        reloaded = true;
+        location.reload();
+      });
+      navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((reg) => reg.update()).catch(() => {});
+    }
     render();
   </script>
 </body>
