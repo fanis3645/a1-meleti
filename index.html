@@ -181,6 +181,7 @@
         note: session.note || "",
         whyText: session.whyText || "",
         requeue: !!session.requeue,
+        duringTour: !!session.duringTour,
         correct: session.view ? session.view.correct : null,
         opts: session.view ? session.view.opts : null
       } : null;
@@ -249,6 +250,50 @@
       return raw;
     }
     function seenCount(items) { return items.filter((it) => rec(it.id).tries > 0).length; }
+    function unseenCount() {
+      let n = 0;
+      for (const it of allItems()) if (rec(it.id).tries === 0) n++;
+      return n;
+    }
+    function attemptTotal() {
+      let n = 0;
+      for (const id of Object.keys(db.answers)) n += db.answers[id].tries || 0;
+      return n;
+    }
+    function avgTimeLabel() {
+      if (!db.timeN) return "–";
+      const sec = Math.round(db.timeMs / db.timeN / 1000);
+      if (sec < 60) return sec + " δευτ.";
+      return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+    }
+    function recordTime(shownAt) {
+      const elapsed = Date.now() - (shownAt || Date.now());
+      if (elapsed < 0 || elapsed > 10 * 60 * 1000) return;
+      db.timeMs = (db.timeMs || 0) + elapsed;
+      db.timeN = (db.timeN || 0) + 1;
+    }
+    function releaseTour() {
+      if (db.tourReleased || unseenCount() > 0) return;
+      const base = db.sessions || 0;
+      for (const id of Object.keys(db.answers)) {
+        const raw = db.answers[id];
+        if (!raw || !raw.tourHold) continue;
+        if (raw.lastOk) {
+          raw.spaced = 1;
+          raw.nextDue = startOfDay(1);
+          raw.missDue = null;
+          raw.lastCorrectDay = raw.lastCorrectDay || dayKey(raw.last);
+        } else {
+          raw.spaced = 0;
+          raw.nextDue = 0;
+          raw.missDue = base + 3;
+          raw.lastCorrectDay = null;
+        }
+        raw.tourHold = false;
+      }
+      db.tourReleased = true;
+      save();
+    }
     function laterCount(items) { return items.filter((it) => rec(it.id).tries > 0 && rec(it.id).lastOk && rec(it.id).nextDue > startOfDay(0)).length; }
     function correctNow(items) { return items.filter((it) => rec(it.id).tries > 0 && rec(it.id).lastOk).length; }
     function present(item) {
@@ -263,9 +308,17 @@
       const today = dayKey();
       let spaced = prev.spaced || 0;
       let lastCorrectDay = prev.lastCorrectDay || null;
+      const onTour = !db.tourReleased && unseenCount() > 0;
       let nextDue = startOfDay(0);
       let missDue = null;
-      if (ok) {
+      if (onTour) {
+        nextDue = 0;
+        missDue = null;
+        if (!ok) {
+          spaced = 0;
+          lastCorrectDay = null;
+        }
+      } else if (ok) {
         if (lastCorrectDay !== today) spaced += 1;
         const gap = INTERVALS[Math.min(spaced, INTERVALS.length) - 1] || 21;
         nextDue = examCap(startOfDay(gap));
@@ -285,7 +338,8 @@
         spaced,
         nextDue,
         lastCorrectDay,
-        missDue
+        missDue,
+        tourHold: onTour ? true : false
       };
       db.answers[item.id] = next;
       save();
@@ -298,13 +352,15 @@
       const waiting = laterCount(all);
       const last = db.exams[0];
       const days = daysLeft();
-      const repeat = all.filter(stillMissing).length;
+      const repeat = db.tourReleased ? all.filter(stillMissing).length : 0;
       app.innerHTML = `
-        <p class="kicker">Πιστοποιητικό α1 · έκδοση 6</p>
+        <p class="kicker">Πιστοποιητικό α1 · έκδοση 7</p>
         <h1>${days > 0 ? days + " μέρες ως τις 31/10" : "31 Οκτωβρίου"}</h1>
-        <p class="sub">Μία παρτίδα 10 ή 20 είναι ακριβώς τόσες προσπάθειες, μία φορά η καθεμία, σωστή ή λάθος. Το λάθος δεν γυρίζει την ίδια μέρα ούτε οπωσδήποτε το επόμενο πρωί: έρχεται μετά από 3 άλλες παρτίδες. Το σωστό έρχεται σε 1, μετά 3, μετά 7 μέρες.</p>
+        <p class="sub">${unseenCount() > 0 ? "Πρώτη βόλτα: μόνο ερωτήσεις που δεν έχεις ξαναδεί, μία φορά η καθεμία. Οι επαναλήψεις ξεκινούν όταν τις δεις όλες." : "Έχεις δει όλη την τράπεζα. Το λάθος έρχεται μετά από 3 παρτίδες. Το σωστό έρχεται σε 1, μετά 3, μετά 7 μέρες."}</p>
         <div class="grid">
           <div class="stat"><b>${seen}/${TOTAL}</b><span>έχεις δει</span></div>
+          <div class="stat"><b>${attemptTotal()}</b><span>απαντήσεις, με τις επαναλήψεις</span></div>
+          <div class="stat"><b>${avgTimeLabel()}</b><span>μέσος χρόνος ανά ερώτηση</span></div>
           <div class="stat"><b>${waiting}</b><span>για άλλη μέρα</span></div>
           <div class="stat"><b class="${last ? (last.score >= 28 ? "pass" : "fail") : ""}">${last ? last.score + "/40" : "–"}</b><span>${last ? (last.score >= 28 ? "τελευταίο τεστ: θα περνούσες" : "τελευταίο τεστ: κάτω από 28") : "δεν έχεις δώσει τεστ"}</span></div>
           <div class="stat"><b>${repeat}</b><span>τις χάνεις ξανά και ξανά</span></div>
@@ -324,9 +380,11 @@
     }
 
     function pickSet(items, n) {
+      releaseTour();
+      const fresh = shuffle(items.filter((it) => rec(it.id).tries === 0));
+      if (!db.tourReleased) return fresh.slice(0, n);
       const misses = shuffle(items.filter(missReady));
       const due = shuffle(items.filter((it) => !missReady(it) && calendarDue(it)));
-      const fresh = shuffle(items.filter((it) => rec(it.id).tries === 0));
       return misses.concat(due).concat(fresh).slice(0, n);
     }
     function startRandom(n) {
@@ -335,7 +393,7 @@
     }
     function startList(items, label) {
       if (!items.length) { alert("Δεν υπάρχουν ερωτήσεις σε αυτή την ομάδα."); return; }
-      session = { label, queue: items.slice(), left: items.length, firstCorrect: 0, firstSeen: {} };
+      session = { label, queue: items.slice(), left: items.length, firstCorrect: 0, firstSeen: {}, duringTour: !db.tourReleased };
       exam = null;
       tab = "solve";
       writeLive();
@@ -343,7 +401,7 @@
     }
 
     function chapters() {
-      app.innerHTML = `<h1>Κεφάλαιο</h1><p class="sub">Μπαίνουν όσες είναι για σήμερα και όσες δεν έχεις δει. Οι υπόλοιπες ξανάρχονται τη μέρα που τους έχει οριστεί.</p><div class="stack">${
+      app.innerHTML = `<h1>Κεφάλαιο</h1><p class="sub">${unseenCount() > 0 ? "Στην πρώτη βόλτα μπαίνουν μόνο όσες δεν έχεις δει σε αυτό το κεφάλαιο." : "Μπαίνουν όσες είναι για σήμερα. Οι υπόλοιπες ξανάρχονται τη μέρα που τους έχει οριστεί."}</p><div class="stack">${
         CHAPTERS.map((ch, i) => {
           const items = chapterItems(ch);
           const seen = seenCount(items);
@@ -354,14 +412,19 @@
       }</div>`;
       app.querySelectorAll(".ch").forEach((b) => b.onclick = () => {
         const ch = CHAPTERS[Number(b.dataset.i)];
-        startList(pickSet(chapterItems(ch), chapterItems(ch).length), ch.title);
+        const batch = pickSet(chapterItems(ch), chapterItems(ch).length);
+        if (!batch.length) { alert(unseenCount() > 0 ? "Αυτό το κεφάλαιο το έχεις ήδη δει. Η πρώτη βόλτα συνεχίζει στα υπόλοιπα." : "Δεν υπάρχουν ερωτήσεις για σήμερα σε αυτό το κεφάλαιο."); return; }
+        startList(batch, ch.title);
       });
     }
 
     function solve() {
       if (!session) { tab = "home"; render(); return; }
       if (!session.queue.length) { summary(); return; }
-      if (!session.view) session.view = present(session.queue[0]);
+      if (!session.view) {
+        session.view = present(session.queue[0]);
+        session.shownAt = Date.now();
+      }
       const view = session.view;
       const item = view.item;
       const open = new Set(session.queue.map((q) => q.id)).size;
@@ -382,15 +445,19 @@
       app.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
         if (session.pick != null) return;
         session.pick = b.dataset.k;
-        const before = rec(item.id).tries;
+        recordTime(session.shownAt);
         const next = grade(item, session.pick, view.correct);
         if (!session.firstSeen[item.id]) {
           session.firstSeen[item.id] = true;
           if (next.lastOk) session.firstCorrect++;
         }
         if (!next.lastOk) {
-          session.note = "Λάθος. Σωστό είναι το " + view.correct + ". Θα ξανάρθει μετά από 3 παρτίδες.";
+          session.note = session.duringTour ? "Λάθος. Σωστό είναι το " + view.correct + "." : "Λάθος. Σωστό είναι το " + view.correct + ". Θα ξανάρθει μετά από 3 παρτίδες.";
           session.whyText = why || view.opts.find((o) => o.show === view.correct).t;
+          session.requeue = false;
+        } else if (session.duringTour) {
+          session.note = "Σωστό.";
+          session.whyText = "";
           session.requeue = false;
         } else {
           const days = Math.max(1, Math.round((next.nextDue - startOfDay(0)) / 86400000));
@@ -405,7 +472,10 @@
       if (nxt) nxt.onclick = () => {
         session.queue.shift();
         session.requeue = false;
-        if (!session.queue.length) db.sessions = (db.sessions || 0) + 1;
+        if (!session.queue.length) {
+          db.sessions = (db.sessions || 0) + 1;
+          releaseTour();
+        }
         session.view = null;
         session.pick = null;
         writeLive();
@@ -422,7 +492,7 @@
           <div class="stat"><b>${session.firstCorrect}/${n}</b><span>σωστές με την πρώτη</span></div>
           <div class="stat"><b>${n - session.firstCorrect}</b><span>λάθος</span></div>
         </div>
-        <p class="sub">Αυτό είναι το σκορ αυτής της παρτίδας, με μία προσπάθεια σε κάθε ερώτηση. Οι λάθος μένουν λάθος και ξανάρχονται μετά από 3 άλλες παρτίδες.</p>
+        <p class="sub">${session.duringTour ? "Μία προσπάθεια σε κάθε ερώτηση. Οι λάθος δεν ξανάρχονται πριν δεις όλη την τράπεζα." : "Μία προσπάθεια σε κάθε ερώτηση. Οι λάθος μένουν λάθος και ξανάρχονται μετά από 3 άλλες παρτίδες."}</p>
         <div class="stack">
           <button class="btn" id="again" type="button">Άλλες 10</button>
           <button class="btn ghost" id="home" type="button">Αρχική</button>
@@ -511,7 +581,7 @@
       const seen = seenCount(all);
       const waiting = laterCount(all);
       const last = db.exams[0];
-      const repeats = all.filter(stillMissing).sort((a, b) => rec(b.id).wrongs - rec(a.id).wrongs);
+      const repeats = (db.tourReleased ? all.filter(stillMissing) : []).sort((a, b) => rec(b.id).wrongs - rec(a.id).wrongs);
       app.innerHTML = `
         <h1>Στατιστικά</h1>
         <div class="grid">
@@ -581,7 +651,8 @@
       else exam = null;
     }
     if (db.liveSession && db.liveSession.ids && db.liveSession.ids.length) {
-      const queue = db.liveSession.ids.map(byId).filter(Boolean);
+      let queue = db.liveSession.ids.map(byId).filter(Boolean);
+      if (!db.tourReleased) queue = queue.filter((q) => rec(q.id).tries === 0);
       if (queue.length) {
         session = {
           label: db.liveSession.label,
@@ -591,7 +662,9 @@
           pick: db.liveSession.pick,
           note: db.liveSession.note || "",
           whyText: db.liveSession.whyText || "",
-          requeue: false
+          requeue: false,
+          duringTour: db.liveSession.duringTour,
+          shownAt: Date.now()
         };
         if (db.liveSession.opts && db.liveSession.correct) {
           session.view = { item: queue[0], opts: db.liveSession.opts, correct: db.liveSession.correct };
